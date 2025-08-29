@@ -1,21 +1,16 @@
-#### Funciones ####
+# =============================================================================
+# functionEpicollect.R - Funciones para la obtención y manejo de datos Epicollect5
+# =============================================================================
 
-library(shiny)
-library(shinydashboard)
-library(shinyWidgets)
-library(bsicons)
-library(bslib)
-library(htmltools)
-library(readr)
-library(purrr)
-library(dplyr)
-library(ggplot2)
 library(httr)
 library(jsonlite)
-
+library(dplyr)
+library(purrr)
+library(tibble)
 
 # ----------- FUNCIONES DE CARGA DE DATOS API ----------- #
 
+# Obtiene el contenido JSON de un endpoint Epicollect5
 get_data <- function(url) {
   response <- GET(url)
   if (status_code(response) == 200) {
@@ -27,91 +22,69 @@ get_data <- function(url) {
   }
 }
 
-
-
+# Descarga todas las entradas de Epicollect5 recorriendo paginación (optimizada)
 get_all_entries <- function(base_url) {
+  all_entries <- list()
+  all_lugar <- list()
+  url_actual <- base_url
+  count <- 1
   
-  all_entries <- tibble()  # Inicializar el tibble vacío
-  all_lugar <- tibble()    # Inicializar el tibble para coordenadas si existen
-  
-  # Obtener el primer conjunto de datos
-  operarios_crudo_get <- get_data(base_url)
-
-  while (!is.null(operarios_crudo_get$links$self)) {
+  repeat {
+    datos <- get_data(url_actual)
+    if (is.null(datos)) break
     
-    if (!is.null(operarios_crudo_get$data$entries)) {
-      
-      # Convertir a tibble
-      entries <- as_tibble(operarios_crudo_get$data$entries)
-      
-      # Convertir todas las columnas numéricas a character
-      entries <- entries %>%
-        mutate(across(where(is.numeric), as.character))
-      
-      # Detectar si hay una columna con datos de ubicación y procesarla
-      col_lugar <- names(entries)[sapply(entries, is.list)]  
-      
+    if (!is.null(datos$data$entries)) {
+      entries <- as_tibble(datos$data$entries)
+      # Convertir columnas numéricas a character para evitar problemas de tipo
+      entries <- mutate(entries, across(where(is.numeric), as.character))
+      # Procesar posibles columnas de ubicación
+      col_lugar <- names(entries)[sapply(entries, is.list)]
       if (length(col_lugar) > 0) {
-        # Extraer datos de latitud, longitud y precisión
         lugar_df <- entries[col_lugar] %>%
           map_dfr(~ tibble(
             latitude = as.character(.x$latitude),
             longitude = as.character(.x$longitude),
             accuracy = as.character(.x$accuracy)
           ))
-        
-        all_lugar <- bind_rows(all_lugar, lugar_df)
-        
-        # Eliminar la columna de ubicación del dataframe original
+        all_lugar[[count]] <- lugar_df
         entries <- select(entries, -all_of(col_lugar))
-        
       }
-      
-      # Acumular los datos
-      all_entries <- bind_rows(all_entries, entries)
+      all_entries[[count]] <- entries
+      count <- count + 1
     }
     
-    # Obtener el siguiente enlace
-    next_link <- operarios_crudo_get$links$`next`
-    
-    # Si no hay más páginas, salir del bucle
-    if (is.null(next_link)) {
-      break
-    }
-    
-    # Obtener el siguiente conjunto de datos
-    operarios_crudo_get <- get_data(next_link)
-    Sys.sleep(1)
+    next_link <- datos$links$`next`
+    if (is.null(next_link)) break
+    url_actual <- next_link
+    Sys.sleep(1)  # Evita saturar el endpoint
   }
   
-  # Retornar los datos combinados si existe información de ubicación
-  if (nrow(all_lugar) > 0) {
-    return(cbind(all_entries, all_lugar))
+  # Combina y retorna los datos
+  entries_final <- bind_rows(all_entries)
+  lugar_final <- bind_rows(all_lugar)
+  if (nrow(lugar_final) > 0) {
+    return(bind_cols(entries_final, lugar_final))
   } else {
-    return(all_entries)
+    return(entries_final)
   }
 }
-#################################################
 
-# ----------- TEMA DE VISUALIZACIÓN ----------- #
-
-tema <- 
-  theme(
-    text = element_text(family = "Montserrat"),
-    plot.title = element_text(size = 20, face = "bold", color = "#4caf50", hjust = 0.5),
-    plot.subtitle = element_text(size = 14, face = "italic", hjust = 0.5),
-    axis.title = element_text(size = 12, face = "bold", color = "#007aff"),
-    axis.text = element_text(size = 10, color = "black"),
-    legend.title = element_text(size = 12, face = "bold"),
-    legend.text = element_text(size = 10),
-    plot.background = element_rect(fill = "white", color = NA),
-    panel.border = element_rect(fill = NA, color = "#4caf50", linewidth = 1, linetype = "solid")
-  )
-
+# Función principal recomendada para obtener datos validados desde Epicollect5
+obtener_datos_epicollect <- function(endpoint_url) {
+  contenido <- get_data(endpoint_url)
+  if (is.null(contenido) || is.null(contenido$links$first)) {
+    warning("No se encontró enlace 'first' en el endpoint: ", endpoint_url)
+    return(NULL)
+  }
+  datos <- get_all_entries(contenido$links$first)
+  if (is.null(datos) || nrow(datos) == 0) {
+    warning("No se encontraron datos válidos en el endpoint: ", endpoint_url)
+    return(NULL)
+  }
+  return(datos)
+}
 
 
-#### 
-# Link_ 
-# para unir los datos############################
-
-
+# =============================================================================
+# FIN DEL ARCHIVO
+# =============================================================================
